@@ -12,8 +12,5 @@ __pycache__/
 backups/
 reports/
 
-# Tests
-test/
-
 # Private Docs
 docs/

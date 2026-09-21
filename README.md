@@ -1,263 +1,335 @@
-# Meraki Switch Refresh Tool
+# Meraki Network Refresh Tool
 
-[![Python Check](https://github.com/kishorekumar45/meraki-switch-refresh/actions/workflows/ci.yml/badge.svgcom/kishorekumar45/meraki-switch-refresh/actions/workflows/ci.yml)
-4
-![Python](https://img.shields.io/badge/Python-3.13atform](https://img.shields.io/bm-Windows-lightgrey
-5
-![Cisco Meraki](https://img.shields.io/badge/Cisco-Meraki-67ttps://img.shields.io/badge/Source-MS120--48LP-bluemg.shields.io/badge/Target-MS130--48X-green
-6
-![API](https://img.shields.io/badge/Meraki-Dashboard_API
-7
-![Status](https://img.shields.io/badge/Status-Production_n
+[#meraki-network-refresh-tool](#meraki-network-refresh-tool)
 
-This is the production script for migrating switch port configuration from an existing Meraki MS120-48LP switch to a replacement Meraki MS130-48X switch.
+![Python Check](https://github.com/kishorekumar45/meraki-switch-refresh/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/Python-3.13-blue)
+![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)
+![Cisco Meraki](https://img.shields.io/badge/Cisco-Meraki-67B346)
+![Tasks](https://img.shields.io/badge/Tasks-ports%20%7C%20mgmt--ip-blue)
+![API](https://img.shields.io/badge/Meraki-Dashboard_API-orange)
+![Status](https://img.shields.io/badge/Status-Production-brightgreen)
 
-This script **does** connect to Meraki Dashboard.
-This script **does** use the Meraki API.
-This script **does** require a `.env` file with a valid Meraki API key.
+This is the production tool for refreshing Cisco Meraki network hardware. It
+currently migrates switch port configuration and the management IPv4
+interface from an existing Meraki MS120-48LP switch to a replacement
+MS130-48X switch, as two independently selectable tasks.
 
-Before using this production script, run the offline test harness first:
-    powershell: python test/test_main.py full-demo
-The offline test harness lets you safely validate the workflow locally before running against real Meraki switches.
+This tool **does** connect to Meraki Dashboard.
+This tool **does** use the Meraki API.
+This tool **does** require a `.env` file with a valid Meraki API key.
+
+The tool reads from the source device and writes only to the target device.
+No code path writes to the source.
+
+Run with no arguments for an interactive wizard, or pass `--source` and
+`--target` for a scripted, non-interactive run.
 
 ---
 
-## What This Script Does
+## What This Tool Does
 
-The production script uses real Meraki Dashboard API calls to:
+[#what-this-tool-does](#what-this-tool-does)
 
-- Read port configuration from the source MS120-48LP switch
-- Read port configuration from the target MS130-48X switch
-- Normalize both switch configs to only the fields selected for migration
-- Compare source and target port configs
-- Create a change plan
-- Back up source and target port configs
-- Apply the source port config to the target switch
-- Re-read the target switch
+The tool uses real Meraki Dashboard API calls to:
+
+- Validate the device pair before anything else happens
+- Read configuration from the source device
+- Read configuration from the target device
+- Build a change plan of only what differs
+- Back up source and target configuration
+- Apply the change plan to the target
+- Re-read the target
 - Verify that the target matches the source for migrated fields
 
-The script assumes a 48-port refresh workflow by default:
-    Source: MS120-48LP
-    Target: MS130-48X
-    Expected ports: 1-48
+Two tasks are available today:
+
+| Task      | What it migrates                                                        |
+| --------- | ------------------------------------------------------------------------ |
+| `ports`   | Per-port config: VLAN, PoE, STP, port security, tags, and more           |
+| `mgmt-ip` | The WAN1 management interface: static/DHCP, address, mask, gateway, DNS  |
+
+Both are selected by default. More tasks (access points, firewall rules,
+DHCP reservations) are designed to plug in the same way. See
+[Adding a New Task](#adding-a-new-task).
+
+---
+
+## Device Protection
+
+[#device-protection](#device-protection)
+
+The switch being replaced is still in production. Five separate layers
+prevent the tool from writing to it:
+
+1. Every write call hardcodes the target serial. No code path writes to the
+   source device.
+2. A direction check refuses to run if the target is an MS120-48LP, the
+   model being replaced. **This check cannot be skipped with `--force`.**
+3. A reversed-pair check detects a source/target swap and names both devices
+   so the mistake is obvious.
+4. A network check refuses to run if the two devices are in different Meraki
+   networks, or if either network cannot be read.
+5. Confirmation requires typing the **target serial**, not a fixed word.
+   Typing the source serial is rejected.
+
+Example of a blocked reversed run:
+
+```text
+[DEVICE] Source Q3LV-JRJY-4EW3: MS130-48X (NEW-SW-IDF1)
+[DEVICE] Target Q2GX-B3FM-HBTM: MS120-48LP (OLD-SW-IDF1)
+
+Source and target look reversed.
+Target Q2GX-B3FM-HBTM is a MS120-48LP (the switch in production).
+This would overwrite the production switch. Swap the serials.
+This check cannot be skipped with --force.
+```
 
 ---
 
 ## Files and Folders
 
-text
+[#files-and-folders](#files-and-folders)
+
+```text
 main.py
 .env
 requirements.txt
+core/
+tasks/
 backups/
 reports/
-test/
-
+```
 
 ### File Purpose
 
-main.py
-    Runs the production Meraki switch refresh workflow.
+[#file-purpose](#file-purpose)
 
-.env
-    Stores the Meraki API key.
+**main.py**
+Entry point. Parses arguments, runs the interactive wizard if `--source` or
+`--target` is missing, validates the device pair, then hands off to the
+runner.
 
-requirements.txt
-    Lists required Python packages.
+**.env**
+Stores the Meraki API key.
 
-backups/
-    Stores source and target switch port backups before migration.
+**requirements.txt**
+Lists required Python packages.
 
-reports
-    Stores diff reports, change plans, verification failure reports, and failure logs.
+**core/**
+Shared machinery every task uses: dashboard connection and retry
+(`client.py`), device pair validation (`validate.py`), backups and reports
+(`io.py`), console output and prompts (`ui.py`), the task contract
+(`task.py`), the phase runner (`runner.py`), and small shared helpers
+(`util.py`).
 
-test/
-    Contains the offline test harness. Run this before production.
+**tasks/**
+One file per task, plus `__init__.py` as the task registry. This is the
+only file you edit to add or remove a task.
+
+**backups/**
+Stores source and target configuration backups taken before any change.
+
+**reports/**
+Stores diff reports, change plans, and verification failure reports.
 
 ---
 
 ## Setup
 
+[#setup](#setup)
+
 Install dependencies:
-    powershell: pip install -r requirements.txt
+powershell: pip install -r requirements.txt
 
 Create a `.env` file in the project root:
-    MERAKI_API_KEY=your_meraki_api_key_here
-    
-    Confirm the `.env` file is named exactly:
+MERAKI_API_KEY=your_meraki_api_key_here
+
+Confirm the `.env` file is named exactly `.env`.
 
 ---
 
 ## Recommended Command
 
-Use the automated migration command after you have tested the offline harness, reviewed the dry-run results, and are ready to run against production.
+[#recommended-command](#recommended-command)
 
-Run this from the project root:
-    powershell: python main.py migrate --source OLD_SERIAL --target NEW_SERIAL --expected-port-count 52 --rollback-on-failure --yes
+For most refreshes, run the tool with no arguments and follow the prompts:
 
+powershell: python main.py
 
-Example:
-    powershell: python main.py migrate --source Q2GX-B3FM-HBTM --target Q3LV-JRJY-4EW3 --expected-port-count 52 --rollback-on-failure --yes
-Use `--yes` only after you are confident the dry-run output and change plan are correct.
-
-Expected successful final output:
-    MIGRATION COMPLETE
-    ----------------------------------------------------------------------
-    PASS: target matches source for migrated fields
+This asks for the source serial, the target serial, which tasks to run, and
+whether to dry-run or apply.
 
 ### What this does
 
-This Command:
-    1. Validates the source and target switch models.
-    2. Validates that both switches expose ports 1 through 52.
-    3. Backs up the source and target port configurations.
-    4. Generates and saves a dry-run difference report.
-    5. Builds and saves the change plan.
-    6. Applies the source port configuration to the target switch.
-    7. Attempts to restore successfully changed target ports if the migration fails partway.
-    8. Re-reads the target switch and verifies all writable migrated fields.
+[#what-this-does](#what-this-does)
 
-    Important: The script reads from the source switch but sends configuration updates only to the target switch. The --yes option skips the manual APPLY confirmation, so verify both serial numbers carefully before running the command.
+1. Prompts for the source and target device serials.
+2. Validates the pair immediately: same network, correct direction, expected
+   models. A wrong pair stops here, before any config is read.
+3. Prompts for which tasks to run (checkbox list).
+4. Prompts for dry-run or apply.
+5. Runs preflight checks for every selected task.
+6. Builds and displays the change plan for every selected task.
+7. Requires the **target serial** to be typed before writing.
+8. Applies changes.
+9. Rolls back every task that wrote if any task fails or fails verification.
+10. Re-reads the target and verifies every selected task.
 
-## Optional: Run Each Command Separately
+Expected successful final output:
 
-If you want to go deeper and control each stage manually, run the commands one by one.
-
----
-
-### 1. Syntax check - Checks that `main.py` has valid Python syntax.
-
-    powershell: python -m py_compile main.py
-
-Expected result:
-    No output
-
-
-### 2. Preflight check - Runs safety checks before generating a diff or applying changes.
-
-    powershell: python main.py preflight --source OLD_SERIAL --target NEW_SERIAL
-
-    What this does
-    It checks:
-    - Source and target serials are different
-    - Source model contains MS120-48LP
-    - Target model contains MS130-48X
-    - Source and target port IDs match
-    - Both switches have ports 1-48
-    - Unsupported/read-only fields are reported
-
-    Expected output:
-        [MODEL] Source OLD_SERIAL: MS120-48LP
-        [MODEL] Target NEW_SERIAL: MS130-48X
-        [PREFLIGHT] Source and target have matching ports 1-48.
+```text
+COMPLETE
+----------------------------------------------------------------------
+PASS  All selected tasks finished and verified.
+```
 
 ---
 
-### 3. Dry run
+## Non-Interactive Command
 
-    powershell: python main.py dry-run --source OLD_SERIAL --target NEW_SERIAL
-    
-    What this does:
-    Compares the source switch config against the target switch config.
-    This does **not** apply any changes.
-    
-    Expected output:
-        Ports requiring updates: ...
-        Field differences: ...
-        [REPORT] reports/...
+[#non-interactive-command](#non-interactive-command)
 
-    This creates a diff report in: reports/
----
+For scripting or automation:
 
-### 4. Apply migration
+powershell: python main.py --source OLD_SERIAL --target NEW_SERIAL --tasks ports,mgmt-ip --yes
 
-    powershell: python main.py apply --source OLD_SERIAL --target NEW_SERIAL
+Example:
+powershell: python main.py --source Q2GX-B3FM-HBTM --target Q3LV-JRJY-4EW3 --tasks ports,mgmt-ip --yes
 
-    Expected output:
-        [BACKUP] backups/...
-        [PLAN] reports/...
-        Apply changes to ... ports on target NEW_SERIAL? Type APPLY to continue:
-        [UPDATED] Port 1
-        [UPDATED] Port 2
-
-    Verification after apply
-        PASS: target matches source for migrated fields
----
-
-### 5. Verify migration
-
-    powershell: python main.py verify --source OLD_SERIAL --target NEW_SERIAL
-
-    What this does:
-        Compares the source switch config against the updated target switch config.
-
-    Expected output:
-        PASS: target matches source for migrated fields
-
-        If verification fails, a verification failure report is saved in: reports/
----
-
-## Recommended Manual Production Sequence
-
-If you do not want to use the one-command `migrate` workflow, run this sequence manually:
-    powershell: 
-        python -m py_compile main.py
-        python main.py preflight --source OLD_SERIAL --target NEW_SERIAL
-        python main.py dry-run --source OLD_SERIAL --target NEW_SERIAL
-        python main.py apply --source OLD_SERIAL --target NEW_SERIAL
-        python main.py verify --source OLD_SERIAL --target NEW_SERIAL
-
-    Expected final result:
-    PASS: target matches source for migrated fields
-
+Use `--yes` only after you are confident the plan output would be correct.
+Run the same command with `--dry-run` first to preview it.
 
 ---
-## Other commands
-### Continue if one port update fails
-    powershell: --continue-on-error
 
-    Continues updating remaining ports if one port update fails. By default, the script stops after a failure.
+## Flags
+
+[#flags](#flags)
+
+### Dry run — preview without writing
+
+[#dry-run-preview-without-writing](#dry-run-preview-without-writing)
+
+powershell: python main.py --source OLD_SERIAL --target NEW_SERIAL --dry-run
+
+What this does:
+Validates the pair, runs preflight, and builds the change plan for the
+selected tasks. Makes **no** write API calls.
+
+---
+
+### Choose which tasks run
+
+[#choose-which-tasks-run](#choose-which-tasks-run)
+
+powershell: --tasks ports
+powershell: --tasks mgmt-ip
+powershell: --tasks ports,mgmt-ip
+
+Comma-separated, no spaces. Omit `--tasks` in non-interactive mode to run
+the default set (`ports,mgmt-ip`). Omit it in interactive mode to get the
+checkbox picker instead.
+
+---
+
+### Skip the target-serial confirmation
+
+[#skip-the-target-serial-confirmation](#skip-the-target-serial-confirmation)
+
+powershell: --yes
+
+Skips the prompt that requires typing the target serial. Use only in
+scripted runs where the plan has already been reviewed. All device
+validation still runs.
 
 ---
 
 ### Skip model validation
-    powershell: --skip-model-check
 
-    Skips checking that the source is `MS120-48LP` and the target is `MS130-48X`. Use this only if you are certain the serial numbers are correct.
+[#skip-model-validation](#skip-model-validation)
+
+powershell: --force
+
+Skips checking that the source and target are the expected switch models.
+
+**`--force` does not skip the direction check.** The tool will still refuse
+to write to an MS120-48LP target, and will still refuse a reversed
+source/target pair. Those checks cannot be disabled.
 
 ---
-
-### Change expected port count
-
-    powershell: --expected-port-count 48
-
-    Default is `48`.
-    Use this only if adapting the script for a different switch refresh path.
----
-
 
 ## Important Notes
 
-- Run the offline test harness first before production.
-- The production script makes real Meraki Dashboard API calls.
-- The target switch can be changed when using `apply` or `migrate`.
-- Always review the dry-run output before applying changes.
+[#important-notes](#important-notes)
+
+- The tool makes real Meraki Dashboard API calls.
+- Only the target device is ever written to.
+- Always review the plan output before typing the target serial.
 - Keep the generated backup and report files for change records.
-- Port mirroring is reported as unsupported/read-only and is not migrated by this script.
+- A failure in any task rolls back every task that already wrote, in reverse
+  order. Verification failure counts as failure.
+- Reads are retried on rate limits, timeouts and 5xx. Writes are retried
+  only on a rate-limit rejection, because a timed-out write may already have
+  landed.
+- Port mirroring is reported as unsupported/read-only and is not migrated.
+- Pressing Ctrl+C during the apply phase does not trigger rollback. Let a
+  failing run finish so rollback can complete.
+
+---
+
+## Adding a New Task
+
+[#adding-a-new-task](#adding-a-new-task)
+
+Every task in `tasks/` implements the same contract (`core/task.py`):
+`preflight`, `plan`, `show_plan`, `apply`, `verify`, `rollback`.
+`core/runner.py` drives every task through the same sequence, so a new task
+never requires changing `main.py`.
+
+To add one:
+
+1. Write `tasks/your_task.py`, implementing the `Task` contract.
+2. Add one line to the registry in `tasks/__init__.py`.
+
+It then appears in the interactive picker and works with `--tasks`
+automatically.
 
 ---
 
 ## Safe Production Flow
 
-    Best practice sequence:
-    powershell:
-        python test/test_main.py full-demo
-        python main.py preflight --source OLD_SERIAL --target NEW_SERIAL
-        python main.py dry-run --source OLD_SERIAL --target NEW_SERIAL
-        python main.py migrate --source OLD_SERIAL --target NEW_SERIAL
+[#safe-production-flow](#safe-production-flow)
 
-    If the final command succeeds, expected final output is:
-        MIGRATION COMPLETE
-        ----------------------------------------------------------------------
-        PASS: target matches source for migrated fields
+Best practice sequence:
 
+```text
+powershell:
+    python main.py --source OLD_SERIAL --target NEW_SERIAL --dry-run
+    python main.py --source OLD_SERIAL --target NEW_SERIAL --tasks ports,mgmt-ip
+```
+
+Run the dry run first and read the plan table. Then run the apply command
+without `--yes` so the target serial must be typed before anything is
+written.
+
+Expected final output:
+
+```text
+COMPLETE
+----------------------------------------------------------------------
+PASS  All selected tasks finished and verified.
+```
+
+---
+
+## Known Limitations
+
+[#known-limitations](#known-limitations)
+
+- Pressing Ctrl+C mid-apply leaves the target partially migrated with no
+  automatic rollback. Restore from the backup in `backups/`.
+- Rollback cannot restore a field whose original value was null.
+- The tool does not verify that the target is unconfigured. Any MS130-48X in
+  the same network is accepted as a valid target.
+- Backup files are written during preflight, including on a dry run. No
+  Meraki writes occur on a dry run.
