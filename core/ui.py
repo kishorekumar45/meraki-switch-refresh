@@ -6,6 +6,7 @@ so the look of the tool can change in one place.
 
 from typing import Any, Dict, List
 
+import re
 import questionary
 from rich.console import Console
 from rich.panel import Panel
@@ -179,3 +180,102 @@ def ask_dry_run() -> bool:
     if answer is None:
         raise SystemExit("Cancelled.")
     return answer
+
+
+def ask_store_number() -> str:
+    """Prompts for an exact three-digit store number."""
+    answer = questionary.text(
+        "Store number (exactly three digits, for example 072):",
+        validate=lambda text: (
+            True
+            if re.fullmatch(r"\d{3}", text.strip())
+            else "Enter exactly three digits, for example 072"
+        ),
+    ).ask()
+
+    if answer is None:
+        raise SystemExit("Cancelled.")
+
+    return answer.strip()
+
+
+def confirm_store_network(organization: str, network: str) -> bool:
+    """Confirms the exact organization and store network."""
+    console.print(
+        Panel(
+            f"Organization : [cyan]{organization}[/cyan]\n"
+            f"Network      : [bold]{network}[/bold]",
+            title="Store Network Check",
+            border_style="yellow",
+        )
+    )
+
+    return bool(
+        questionary.confirm(
+            "Is this the correct store network?",
+            default=False,
+        ).ask()
+    )
+
+
+def store_device_counts(
+    store: str,
+    switches: int,
+    access_points: int,
+) -> None:
+    """Displays the existing store-device count."""
+    console.print(
+        f"Store {store}\n"
+        f"Existing MS120 switches: {switches}\n"
+        f"Existing access points: {access_points}"
+    )
+
+
+def ask_cloud_id(label: str) -> str:
+    """Prompts for a replacement-device Cloud ID."""
+    answer = questionary.text(
+        f"{label} Cloud ID:",
+        validate=lambda text: (
+            True if text.strip() else "Cloud ID cannot be empty"
+        ),
+    ).ask()
+
+    if answer is None:
+        raise SystemExit("Cancelled.")
+
+    return answer.strip().upper()
+
+
+def show_onboarding_plan(
+    network: str,
+    replacements: List[Dict[str, str]],
+) -> None:
+    """Displays replacement-device actions before any changes."""
+    table = Table(
+        title=f"Onboarding plan — {network}",
+        header_style="bold",
+    )
+    table.add_column("Device")
+    table.add_column("Cloud ID", style="cyan")
+    table.add_column("New name", style="green")
+    table.add_column("Action", style="yellow")
+
+    for item in replacements:
+        table.add_row(
+            item["kind"],
+            item["serial"],
+            item["name"],
+            item["status"],
+        )
+
+    console.print(table)
+
+
+def confirm_onboarding(store: str) -> bool:
+    """Confirms onboarding before claiming or renaming devices."""
+    return bool(
+        questionary.confirm(
+            f"Proceed with adding and renaming devices for Store {store}?",
+            default=False,
+        ).ask()
+    )

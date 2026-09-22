@@ -1,11 +1,4 @@
-"""Meraki network refresh runner.
-
-Run with no arguments for the interactive picker, or pass --source/--target
-for automation.
-
-Device validation runs as soon as both serials are known, before any task is
-chosen or any config is read.
-"""
+"""Meraki network refresh and store onboarding entry point."""
 
 import argparse
 
@@ -13,45 +6,50 @@ import tasks
 from core import io, runner, ui, validate
 from core.client import load_dashboard
 from core.task import Context
+from workflows import onboard_store
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Migrate Meraki config from a source device to a replacement."
+        description="Onboard replacement devices or migrate Meraki switch configuration."
     )
+    parser.add_argument(
+        "workflow",
+        nargs="?",
+        choices=("refresh", "onboard-store"),
+        default="refresh",
+        help="Workflow to run. Default: refresh",
+    )
+    parser.add_argument("--store", help="Exactly three digits, for example 072")
     parser.add_argument("--source", help="Source switch serial")
     parser.add_argument("--target", help="Target switch serial")
     parser.add_argument(
         "--tasks",
         help=f"Comma-separated task names. Available: {', '.join(tasks.REGISTRY)}",
     )
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show the plan and write nothing")
-    parser.add_argument("--yes", action="store_true",
-                        help="Skip the target-serial confirmation")
-    parser.add_argument("--force", action="store_true",
-                        help="Skip model validation. Does NOT skip the direction check")
+    parser.add_argument("--dry-run", action="store_true", help="Show the plan and write nothing")
+    parser.add_argument("--yes", action="store_true", help="Skip the target-serial confirmation")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip model validation. Does NOT skip the direction check",
+    )
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
+def run_refresh(args: argparse.Namespace, dashboard) -> None:
     interactive = not args.source or not args.target
-
     source = args.source or ui.ask_serial("Source")
     target = args.target or ui.ask_serial("Target")
 
-    io.ensure_dirs()
     ctx = Context(
-        dashboard=load_dashboard(),
+        dashboard=dashboard,
         source=source,
         target=target,
         yes=args.yes,
         force=args.force,
     )
 
-    # Runs before task selection: a wrong pair should stop here, not after
-    # the operator has picked tasks and waited through a config read.
     ui.section("DEVICE VALIDATION")
     validate.devices(ctx)
 
@@ -70,14 +68,26 @@ def main() -> None:
         dry_run = False
 
     ui.summary_panel(source, target, names, dry_run)
-
     passed = runner.run(tasks.build(names), ctx, dry_run)
-
     if not passed:
         raise SystemExit("Refresh did not complete. Review the reports in reports/.")
 
     ui.section("COMPLETE")
     ui.ok("All selected tasks finished and verified.")
+
+
+def main() -> None:
+    args = parse_args()
+    io.ensure_dirs()
+    dashboard = load_dashboard()
+
+    if args.workflow == "onboard-store":
+        onboard_store.run(dashboard, args.store)
+        return
+
+    if args.store:
+        raise SystemExit("--store is only valid with the onboard-store workflow.")
+    run_refresh(args, dashboard)
 
 
 if __name__ == "__main__":

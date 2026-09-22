@@ -55,6 +55,31 @@ DHCP reservations) are designed to plug in the same way. See
 
 ---
 
+## Store Device Onboarding
+
+The `onboard-store` workflow prepares replacement switches and access points before migration.
+
+Run:
+
+```powershell
+python main.py onboard-store
+```
+
+The workflow:
+
+1. Requires the store number as exactly three digits, such as `072`. It does not convert `72` to `072`.
+2. Finds exactly one network beginning with `Store 072 - `.
+3. Displays the accessible organization and full network name and waits for Yes/No confirmation.
+4. Counts existing MS120 switches and access points in the store network.
+5. Prompts separately for the required replacement switch and AP Cloud IDs.
+6. Claims unclaimed devices, adds claimed but unassigned devices, and skips devices already in the correct network.
+7. Stops if any device is assigned to another network.
+8. Renames the switch from the existing pattern, for example `LDBRS072-MS120` to `LDBRS072-MS130`.
+9. Names replacement APs sequentially, for example `CW9176I-S072A` and `CW9176I-S072B`.
+10. Verifies the final network assignment and device names.
+
+Cloud IDs entered during onboarding are not passed into the `ports` workflow. Port migration still requires separate manual source and target serial entry and validation.
+
 ## Device Protection
 
 [#device-protection](#device-protection)
