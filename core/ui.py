@@ -1,12 +1,8 @@
-"""Console output and operator prompts.
-
-Every module prints through here. Nothing calls print() or input() directly,
-so the look of the tool can change in one place.
-"""
-
-from typing import Any, Dict, List
+"""Console output and operator prompts."""
 
 import re
+from typing import Any, Dict, List
+
 import questionary
 from rich.console import Console
 from rich.panel import Panel
@@ -17,34 +13,59 @@ from core.util import sort_port_ids
 console = Console()
 
 
-# ------------------------------------------------------------- output
+# ------------------------------------------------------------- status/output
 
 
 def section(title: str) -> None:
     console.rule(f"[bold cyan]{title}")
 
 
-def info(message: str) -> None:
-    console.print(f"[cyan]INFO[/cyan]  {message}")
+def safe(message: str) -> None:
+    console.print(f"[bold green][SAFE][/bold green]     {message}")
 
 
-def warn(message: str) -> None:
-    console.print(f"[yellow]WARN[/yellow]  {message}")
+def review(message: str) -> None:
+    console.print(f"[bold cyan][REVIEW][/bold cyan]   {message}")
+
+
+def warning(message: str) -> None:
+    console.print(f"[bold yellow][WARNING][/bold yellow]  {message}")
+
+
+def write(message: str) -> None:
+    console.print(f"[bold magenta][WRITE][/bold magenta]    {message}")
 
 
 def ok(message: str) -> None:
-    console.print(f"[bold green]PASS[/bold green]  {message}")
+    console.print(f"[bold green][PASS][/bold green]     {message}")
 
 
 def fail(message: str) -> None:
-    console.print(f"[bold red]FAIL[/bold red]  {message}")
+    console.print(f"[bold red][FAIL][/bold red]     {message}")
+
+
+# Backward-compatible names used by existing modules.
+def info(message: str) -> None:
+    review(message)
+
+
+def warn(message: str) -> None:
+    warning(message)
+
+
+def progress(step: int, total: int, label: str, status: str = "CURRENT") -> None:
+    colors = {
+        "PASS": "green",
+        "CURRENT": "cyan",
+        "PENDING": "dim",
+        "FAIL": "red",
+    }
+    color = colors.get(status, "white")
+    console.print(f"[{color}][{step}/{total}] {label:<30} {status}[/{color}]")
 
 
 def print_diff_report(diffs: Dict[str, Dict[str, Any]], unit_label: str = "Port") -> None:
-    """Renders a diff map as a table.
-
-    diffs is {unit_id: {field: {"source": ..., "target": ...}}}
-    """
+    """Renders a full diff map as a table."""
     if not diffs:
         ok("No differences found")
         return
@@ -67,7 +88,6 @@ def print_diff_report(diffs: Dict[str, Dict[str, Any]], unit_label: str = "Port"
             first = False
 
     console.print(table)
-
     fields = sum(len(changes) for changes in diffs.values())
     console.print(
         f"[dim]{len(diffs)} {unit_label.lower()}(s) differ, "
@@ -75,8 +95,35 @@ def print_diff_report(diffs: Dict[str, Dict[str, Any]], unit_label: str = "Port"
     )
 
 
+def port_plan_summary(plan: Dict[str, Dict[str, Any]], report_path: Any) -> None:
+    """Shows decision-level port counts while the report keeps full detail."""
+    field_changes = sum(len(payload) for payload in plan.values())
+    vlan_changes = sum("vlan" in payload for payload in plan.values())
+    type_changes = sum("type" in payload for payload in plan.values())
+    enabled_changes = sum("enabled" in payload for payload in plan.values())
+    poe_changes = sum("poeEnabled" in payload for payload in plan.values())
+
+    body = (
+        f"Ports changing       : [bold]{len(plan)}[/bold]\n"
+        f"Field changes        : {field_changes}\n"
+        f"VLAN changes         : {vlan_changes}\n"
+        f"Port type changes    : {type_changes}\n"
+        f"Enabled-state changes: {enabled_changes}\n"
+        f"PoE changes          : {poe_changes}\n\n"
+        f"Full report: [cyan]{report_path}[/cyan]"
+    )
+    console.print(Panel(body, title="Port Migration Summary", border_style="cyan"))
+
+
+def ask_view_port_details() -> bool:
+    answer = questionary.confirm(
+        "View the full port-by-port differences?",
+        default=False,
+    ).ask()
+    return bool(answer)
+
+
 def report_conditioned(dropped_by_unit: Dict[str, Dict[str, str]]) -> None:
-    """Explains which fields were dropped from the plan, and why."""
     if not dropped_by_unit:
         return
 
@@ -93,7 +140,6 @@ def report_conditioned(dropped_by_unit: Dict[str, Dict[str, str]]) -> None:
 
 
 def summary_panel(source: str, target: str, tasks: List[str], dry_run: bool) -> None:
-    """Shows what is about to happen before the operator confirms."""
     mode = "[yellow]DRY RUN (read-only)[/yellow]" if dry_run else "[bold red]APPLY[/bold red]"
     body = (
         f"Source : [green]{source}[/green]\n"
@@ -102,6 +148,66 @@ def summary_panel(source: str, target: str, tasks: List[str], dry_run: bool) -> 
         f"Mode   : {mode}"
     )
     console.print(Panel(body, title="Meraki Refresh", border_style="cyan"))
+
+
+def final_change_review(target: str, pending, plans: Dict[str, Any]) -> None:
+    lines = [f"Target switch : [bold red]{target}[/bold red]", "", "Changes:"]
+    for task in pending:
+        plan = plans[task.name]
+        if task.name == "ports":
+            lines.append(f"• Update {len(plan)} switch port(s)")
+        elif task.name == "mgmt-ip":
+            ip_address = plan.get("staticIp", "DHCP")
+            lines.append(f"• Copy management IPv4 settings ({ip_address})")
+        else:
+            lines.append(f"• Apply {task.description}")
+
+    lines.extend([
+        "",
+        "[bold yellow]This operation changes production network configuration.[/bold yellow]",
+    ])
+    console.print(Panel("\n".join(lines), title="Final Change Review", border_style="red"))
+
+
+def confirm_management_ip(plan: Dict[str, Any]) -> None:
+    ip_address = plan.get("staticIp", "DHCP")
+    vlan = plan.get("vlan", "Not configured")
+    gateway = plan.get("staticGatewayIp", "DHCP")
+
+    body = (
+        "The new switch will receive:\n"
+        f"IP address : [bold]{ip_address}[/bold]\n"
+        f"VLAN       : {vlan}\n"
+        f"Gateway    : {gateway}\n\n"
+        "[bold red]The old switch must not remain connected with the same static IP.[/bold red]"
+    )
+    console.print(Panel(body, title="WARNING: Management IP Change", border_style="yellow"))
+
+    confirmed = questionary.confirm(
+        "Confirm the old switch is disconnected before this IP is applied:",
+        default=False,
+    ).ask()
+    if not confirmed:
+        raise SystemExit("Management IP safety confirmation was not accepted.")
+
+
+def deployment_success(target: str, task_names: List[str]) -> None:
+    lines = [f"Target : {target}", ""]
+    for name in task_names:
+        lines.append(f"{name:<18} PASS")
+    lines.extend(["", "Backups and reports were saved."])
+    console.print(Panel("\n".join(lines), title="Deployment Complete", border_style="green"))
+
+
+def deployment_failure(failed_step: str, target: str, rollback_attempted: bool) -> None:
+    rollback = "ATTEMPTED" if rollback_attempted else "NOT REQUIRED"
+    body = (
+        f"Failed step     : {failed_step}\n"
+        f"Target          : {target}\n"
+        f"Rollback status : {rollback}\n\n"
+        "[bold yellow]Review the target in Meraki Dashboard and the saved reports before continuing.[/bold yellow]"
+    )
+    console.print(Panel(body, title="Deployment Stopped", border_style="red"))
 
 
 def _short(value: Any, limit: int = 28) -> str:
@@ -117,30 +223,20 @@ def _short(value: Any, limit: int = 28) -> str:
 
 
 def confirm_target(target: str, task_count: int, yes: bool = False) -> None:
-    """Requires the operator to type the TARGET serial before anything is written.
-
-    Typing a fixed word proves only that someone is present. Typing the
-    serial that is about to be overwritten proves they know which device it
-    is, which is the mistake that actually costs an outage.
-    """
     if yes:
-        info(f"--yes supplied. Writing to {target} without confirmation.")
+        write(f"--yes supplied. Writing {task_count} task(s) to {target}.")
         return
 
-    console.print(
-        f"\n[bold red]About to write {task_count} task(s) to {target}.[/bold red]\n"
-        "[dim]Nothing is written to the source device.[/dim]"
-    )
+    write(f"Ready to write {task_count} task(s) to target {target}.")
+    safe("Nothing is written to the source device.")
     answer = questionary.text(
         f"Type the TARGET serial ({target}) to continue:"
     ).ask()
-
     if answer is None or answer.strip() != target:
         raise SystemExit("Serial did not match. Aborted. No changes applied.")
 
 
 def ask_serial(label: str) -> str:
-    """Prompts for a switch serial and rejects an empty answer."""
     answer = questionary.text(
         f"{label} switch serial:",
         validate=lambda text: True if text.strip() else "Serial cannot be empty",
@@ -151,7 +247,6 @@ def ask_serial(label: str) -> str:
 
 
 def ask_tasks(choices: List[tuple], default: List[str]) -> List[str]:
-    """Checkbox picker. choices is [(name, description), ...]."""
     selected = questionary.checkbox(
         "Select the tasks to run:",
         choices=[
@@ -169,7 +264,6 @@ def ask_tasks(choices: List[tuple], default: List[str]) -> List[str]:
 
 
 def ask_dry_run() -> bool:
-    """Defaults to the safe option."""
     answer = questionary.select(
         "Run mode:",
         choices=[
@@ -183,7 +277,6 @@ def ask_dry_run() -> bool:
 
 
 def ask_store_number() -> str:
-    """Prompts for an exact three-digit store number."""
     answer = questionary.text(
         "Store number (exactly three digits, for example 072):",
         validate=lambda text: (
@@ -192,15 +285,12 @@ def ask_store_number() -> str:
             else "Enter exactly three digits, for example 072"
         ),
     ).ask()
-
     if answer is None:
         raise SystemExit("Cancelled.")
-
     return answer.strip()
 
 
 def confirm_store_network(organization: str, network: str) -> bool:
-    """Confirms the exact organization and store network."""
     console.print(
         Panel(
             f"Organization : [cyan]{organization}[/cyan]\n"
@@ -209,21 +299,10 @@ def confirm_store_network(organization: str, network: str) -> bool:
             border_style="yellow",
         )
     )
-
-    return bool(
-        questionary.confirm(
-            "Is this the correct store network?",
-            default=False,
-        ).ask()
-    )
+    return bool(questionary.confirm("Is this the correct store network?", default=False).ask())
 
 
-def store_device_counts(
-    store: str,
-    switches: int,
-    access_points: int,
-) -> None:
-    """Displays the existing store-device count."""
+def store_device_counts(store: str, switches: int, access_points: int) -> None:
     console.print(
         f"Store {store}\n"
         f"Existing MS120 switches: {switches}\n"
@@ -232,47 +311,27 @@ def store_device_counts(
 
 
 def ask_cloud_id(label: str) -> str:
-    """Prompts for a replacement-device Cloud ID."""
     answer = questionary.text(
         f"{label} Cloud ID:",
-        validate=lambda text: (
-            True if text.strip() else "Cloud ID cannot be empty"
-        ),
+        validate=lambda text: True if text.strip() else "Cloud ID cannot be empty",
     ).ask()
-
     if answer is None:
         raise SystemExit("Cancelled.")
-
     return answer.strip().upper()
 
 
-def show_onboarding_plan(
-    network: str,
-    replacements: List[Dict[str, str]],
-) -> None:
-    """Displays replacement-device actions before any changes."""
-    table = Table(
-        title=f"Onboarding plan — {network}",
-        header_style="bold",
-    )
+def show_onboarding_plan(network: str, replacements: List[Dict[str, str]]) -> None:
+    table = Table(title=f"Onboarding plan — {network}", header_style="bold")
     table.add_column("Device")
     table.add_column("Cloud ID", style="cyan")
     table.add_column("New name", style="green")
     table.add_column("Action", style="yellow")
-
     for item in replacements:
-        table.add_row(
-            item["kind"],
-            item["serial"],
-            item["name"],
-            item["status"],
-        )
-
+        table.add_row(item["kind"], item["serial"], item["name"], item["status"])
     console.print(table)
 
 
 def confirm_onboarding(store: str) -> bool:
-    """Confirms onboarding before claiming or renaming devices."""
     return bool(
         questionary.confirm(
             f"Proceed with adding and renaming devices for Store {store}?",
@@ -280,21 +339,14 @@ def confirm_onboarding(store: str) -> bool:
         ).ask()
     )
 
-def ask_workflow() -> str:
-    """Shows the main launcher menu. Combined onboarding and refresh is default."""
-    console.print("\n[bold cyan]Meraki Network Refresh Tool[/bold cyan]\n")
 
+def ask_workflow() -> str:
+    console.print("\n[bold cyan]Meraki Network Refresh Tool[/bold cyan]\n")
     answer = questionary.select(
         "Select workflow:",
         choices=[
-            questionary.Choice(
-                "Onboard store devices",
-                value="onboard-store",
-            ),
-            questionary.Choice(
-                "Refresh switch configuration",
-                value="refresh",
-            ),
+            questionary.Choice("Onboard store devices", value="onboard-store"),
+            questionary.Choice("Refresh switch configuration", value="refresh"),
             questionary.Choice(
                 "Onboard devices, then refresh switch",
                 value="onboard-refresh",
@@ -303,8 +355,4 @@ def ask_workflow() -> str:
         ],
         default="onboard-refresh",
     ).ask()
-
-    if answer is None:
-        return "exit"
-
-    return answer
+    return answer or "exit"
