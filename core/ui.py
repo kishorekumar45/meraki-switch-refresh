@@ -279,3 +279,32 @@ def confirm_onboarding(store: str) -> bool:
             default=False,
         ).ask()
     )
+
+def ask_workflow() -> str:
+    """Shows the main launcher menu. Combined onboarding and refresh is default."""
+    console.print("\n[bold cyan]Meraki Network Refresh Tool[/bold cyan]\n")
+
+    answer = questionary.select(
+        "Select workflow:",
+        choices=[
+            questionary.Choice(
+                "Onboard store devices",
+                value="onboard-store",
+            ),
+            questionary.Choice(
+                "Refresh switch configuration",
+                value="refresh",
+            ),
+            questionary.Choice(
+                "Onboard devices, then refresh switch",
+                value="onboard-refresh",
+            ),
+            questionary.Choice("Exit", value="exit"),
+        ],
+        default="onboard-refresh",
+    ).ask()
+
+    if answer is None:
+        return "exit"
+
+    return answer
